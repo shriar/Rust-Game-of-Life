@@ -11,6 +11,7 @@ fn window_conf() -> Conf {
 
 struct GameState {
     cells: Vec<Vec<bool>>,
+    fade_grid: Vec<Vec<f32>>,
     running: bool,
     frame_count: i32,
     grid_rows: i32,
@@ -22,6 +23,7 @@ impl GameState {
     fn new(rows: i32, cols: i32) -> Self {
         Self {
             cells: vec![vec![false; cols as usize]; rows as usize],
+            fade_grid: vec![vec![0.0; cols as usize]; rows as usize],
             running: false,
             frame_count: 0,
             grid_rows: rows,
@@ -64,6 +66,7 @@ impl GameState {
             let row = (my / cell_h) as i32;
             if col >= 0 && col < self.grid_cols && row >= 0 && row < self.grid_rows {
                 self.cells[row as usize][col as usize] = true;
+                self.fade_grid[row as usize][col as usize] = 1.0;
             }
         }
 
@@ -75,6 +78,7 @@ impl GameState {
 
             if col >= 0 && col < self.grid_cols && row >= 0 && row < self.grid_rows {
                 self.cells[row as usize][col as usize] = false;
+                // Don't clear fade immediately for a nice effect, or do? Let's let it decay.
             }
         }
 
@@ -88,14 +92,34 @@ impl GameState {
             for row in 0..self.grid_rows {
                 for col in 0..self.grid_cols {
                     self.cells[row as usize][col as usize] = false;
+                    self.fade_grid[row as usize][col as usize] = 0.0;
                 }
             }
             self.running = false; // Also pause the simulation
             self.frame_count = 0; // Reset frame counter
         }
+
+        // Speed control
+        if is_key_pressed(KeyCode::Up) {
+            self.update_delay = (self.update_delay - 1).max(1);
+        }
+        if is_key_pressed(KeyCode::Down) {
+            self.update_delay = (self.update_delay + 1).min(60);
+        }
     }
 
     fn update(&mut self) {
+        // Update fade grid every frame for smooth animation
+        for row in 0..self.grid_rows {
+            for col in 0..self.grid_cols {
+                if self.cells[row as usize][col as usize] {
+                    self.fade_grid[row as usize][col as usize] = 1.0;
+                } else {
+                    self.fade_grid[row as usize][col as usize] *= 0.90; // Decay
+                }
+            }
+        }
+
         if self.running {
             self.frame_count += 1;
 
@@ -112,7 +136,7 @@ impl GameState {
                                 new_cells[row as usize][col as usize] = false;
                             }
                         } else {
-                            if neighbors == 3{
+                            if neighbors == 3 {
                                 new_cells[row as usize][col as usize] = true;
                             }
                         }
@@ -127,28 +151,91 @@ impl GameState {
         let cell_w = screen_width() / self.grid_cols as f32;
         let cell_h = screen_height() / self.grid_rows as f32;
 
-        clear_background(BLACK);
+        // Modern Dark Theme
+        clear_background(Color::new(0.1, 0.1, 0.15, 1.0));
 
-        // Draw colored cells
+        // Draw colored cells with a slight margin for a "grid" look without lines
+        let margin = 1.0;
+        let draw_w = (cell_w - margin).max(1.0);
+        let draw_h = (cell_h - margin).max(1.0);
+
         for row in 0..self.grid_rows {
             for col in 0..self.grid_cols {
-                if self.cells[row as usize][col as usize] {
-                    let x = col as f32 * cell_w;
-                    let y = row as f32 * cell_h;
-                    draw_rectangle(x, y, cell_w, cell_h, WHITE);
+                let fade = self.fade_grid[row as usize][col as usize];
+                if fade > 0.05 {
+                    // Only draw if visible enough
+                    let x = col as f32 * cell_w + margin / 2.0;
+                    let y = row as f32 * cell_h + margin / 2.0;
+
+                    // Neon Green/Cyan color with alpha based on fade
+                    // Alive cells are full brightness, dying cells fade out
+                    let color = if self.cells[row as usize][col as usize] {
+                        Color::new(0.0, 1.0, 0.8, 1.0) // Alive color
+                    } else {
+                        Color::new(0.0, 0.8, 0.6, fade) // Trail color
+                    };
+
+                    draw_rectangle(x, y, draw_w, draw_h, color);
                 }
             }
         }
 
-        // Draw grid lines on top
-        for i in 0..=self.grid_cols {
-            let x = i as f32 * cell_w;
-            draw_line(x, 0.0, x, screen_height(), 1.0, DARKGRAY);
+        // Optional: Very faint grid lines if cells are large enough, otherwise skip
+        if cell_w > 5.0 {
+            for i in 0..=self.grid_cols {
+                let x = i as f32 * cell_w;
+                draw_line(
+                    x,
+                    0.0,
+                    x,
+                    screen_height(),
+                    1.0,
+                    Color::new(1.0, 1.0, 1.0, 0.05),
+                );
+            }
+            for j in 0..=self.grid_rows {
+                let y = j as f32 * cell_h;
+                draw_line(
+                    0.0,
+                    y,
+                    screen_width(),
+                    y,
+                    1.0,
+                    Color::new(1.0, 1.0, 1.0, 0.05),
+                );
+            }
         }
-        for j in 0..=self.grid_rows {
-            let y = j as f32 * cell_h;
-            draw_line(0.0, y, screen_width(), y, 1.0, DARKGRAY);
-        }
+
+        // HUD
+        let status = if self.running { "RUNNING" } else { "PAUSED" };
+        let fps = get_fps();
+
+        // Draw a semi-transparent background for the HUD
+        draw_rectangle(10.0, 10.0, 280.0, 110.0, Color::new(0.0, 0.0, 0.0, 0.7));
+
+        draw_text(&format!("Status: {}", status), 20.0, 30.0, 20.0, WHITE);
+        draw_text(&format!("FPS: {}", fps), 20.0, 50.0, 20.0, WHITE);
+        draw_text(
+            &format!("Speed (Delay): {}", self.update_delay),
+            20.0,
+            70.0,
+            20.0,
+            WHITE,
+        );
+        draw_text(
+            "Controls: Space (Toggle), C (Clear)",
+            20.0,
+            90.0,
+            16.0,
+            LIGHTGRAY,
+        );
+        draw_text(
+            "Up/Down (Speed), Left/Right Click",
+            20.0,
+            110.0,
+            16.0,
+            LIGHTGRAY,
+        );
     }
 }
 
